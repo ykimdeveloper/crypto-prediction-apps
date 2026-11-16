@@ -74,3 +74,16 @@ candles per ticker (volume-weighted by default) and runs the FastAPI indicators 
 per exchange (live / stale / n/a, price, offset from the merged price in bp). The box in the menu accepts any CCXT exchange id.
 **FastAPI** mode is unchanged: one exchange, full server desk. **Custom routes** is unchanged: browser talks to each exchange directly.
 Rebuild with `npm run build` if you serve `dist/`.
+
+## v0.2 strategy rules (from the Bleeplorp 0.2 walkthrough)
+
+Tunable constants live in `src/lib/constants.js` (`TIMING`, `MID`, `EOM_INDICATOR_WEIGHT`) and are mirrored 1:1 in
+`backend/app/constants.py`. Change both together; `backend/tests/test_parity.py` checks the two sides agree.
+
+- **Mid-market is momentum-only.** Mean reversion is still classified (the lean/story labels are unchanged) but `MID.revEnabled = false`
+  means MID REV never buys. This is separate from the `midEnabled` UI toggle, which pauses both forks.
+- **At least 6:00 left** (`TIMING.midEntryMinRemaining`).
+- **Price already slightly on the lean's side of the strike, not exhausted:** signed distance from the strike, in sigmas of the remaining path
+  (`ATR * sqrt(candles left)`), must be within `MID.sideMinZ`..`MID.sideMaxZ`. Momentum fork only.
+- **The +20¢ must be likely:** `pHit = P(side wins) / (ask + tp + half-spread)` must be at least `MID.minHitProb`. Momentum fork only.
+- **End-of-market indicators are a fading nudge:** weight `EOM_INDICATOR_WEIGHT` at 8:00, linearly to 0 at 2:00.

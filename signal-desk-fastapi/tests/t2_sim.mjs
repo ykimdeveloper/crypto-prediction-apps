@@ -62,11 +62,12 @@ describe('14h simulated session (4 symbols, regime-switching volatility)', () =>
 
   const by = (s) => entries.filter((e) => e.strat === s);
 
-  test('some trades happened for each strategy', () => {
-    for (const s of ['rev', 'mom', 'end']) expect(by(s).length).toBeGreaterThan(0);
+  test('some trades happened for mom and end; MID REV never trades (v0.2 is momentum-only)', () => {
+    for (const s of ['mom', 'end']) expect(by(s).length).toBeGreaterThan(0);
+    expect(by('rev').length).toBe(0);
   });
 
-  test('mid-market recs only open with >= 5:00 left', () => {
+  test('mid-market recs only open with >= 6:00 left', () => {
     const mid = entries.filter((e) => e.strat !== 'end');
     for (const e of mid) expect(e.remMinAtOpen).toBeGreaterThanOrEqual(TIMING.midEntryMinRemaining - 0.02);
   });
