@@ -1,0 +1,16 @@
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  background: #0e1116;
+  color: #e7eaf0;
+  font-family: 'Fraunces', serif;
+}
+body {
+  min-height: 100vh;
+  padding: 26px 20px 60px;
+}

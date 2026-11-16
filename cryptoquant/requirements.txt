@@ -1,0 +1,11 @@
+pandas
+numpy
+requests
+scikit-learn
+lightgbm
+catboost
+xgboost
+arch
+joblib
+fastapi
+uvicorn
