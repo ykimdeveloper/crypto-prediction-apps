@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ticker Alerts</title>
+<style>
+:root{--bg:#0d0e10;--card:#16181c;--fg:#e8e8e8;--mut:#8a8f98;--g:#3ecf8e;--r:#ef5350;--y:#f5c542}
+*{box-sizing:border-box}body{margin:auto;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,sans-serif;padding:16px;max-width:1100px}
+.card{background:var(--card);border-radius:10px;padding:16px;margin-bottom:14px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:800px){.grid{grid-template-columns:1fr}}.grid .card{margin:0}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:space-between}
+button,input{background:#262a31;color:var(--fg);border:0;border-radius:6px;padding:8px 12px}input{width:130px}button{cursor:pointer}button:hover{background:#333842}
+.mut{color:var(--mut)}.badge{font-size:24px;font-weight:700;padding:2px 14px;border-radius:8px;display:inline-block}
+.BUY{background:var(--g);color:#000}.WAIT{background:var(--y);color:#000}.AVOID{background:var(--r);color:#000}.SPLIT{background:#5b6270;color:#fff}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}th,td{text-align:right;padding:4px 8px;border-bottom:1px solid #23262b}
+th:first-child,td:first-child{text-align:left}pre{overflow:auto;font-size:12px;background:#0a0b0d;padding:10px;border-radius:6px}
+.bullish,.pos{color:var(--g)}.bearish,.neg{color:var(--r)}.neutral{color:var(--mut)}li{margin:2px 0}.sm{font-size:12px;padding:1px 8px}.OFF{background:#333842;color:var(--mut)}input[type=checkbox]{width:auto}.stat td{font-size:12px}
+</style></head><body>
+<div class="card row"><div><b id="sym">…</b> <span class="mut" id="meta"></span></div>
+<div>Over/under <input id="thr" type="number" step="any" placeholder="price (optional)">
+<button onclick="notif()">Enable alerts</button> <button id="runbtn" onclick="run()">Analyze now</button> <button onclick="bt()">Backtest</button></div></div>
+<div class="card row"><div><b>Contract engine</b> <span class="mut">15-min Up/Down · quant only, paper</span></div>
+<div>Fee ¢ <input id="c_fee" type="number" step="0.1" value="0.8" style="width:64px"> Stop % <input id="c_stop" type="number" value="75" style="width:64px">
+End TP ¢ <input id="c_tp" type="number" value="99" style="width:64px"> Min conf <input id="c_conf" type="number" value="80" style="width:64px">
+<label><input id="c_mid" type="checkbox" checked> mid-market</label> <label><input id="c_cl" type="checkbox"> Claude</label>
+<button onclick="cfg()">Apply</button> <button onclick="rst()">Reset paper</button></div></div>
+<div id="eng" class="card mut">Starting contract engine… (the first start backfills candles from Coinbase)</div>
+<div id="err" class="card" style="display:none;color:var(--r)"></div>
+<div id="main" class="card mut">Waiting for first analysis… scheduled runs fire at each 15-min close; click “Analyze now” to run immediately.</div>
+<div class="card"><b>History</b><table id="hist"></table></div>
+<div id="btc" class="card" style="display:none"></div>
+<script>
+const $=id=>document.getElementById(id);let lastId=null;
+const f=(x,d=2)=>x==null?'-':Number(x).toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d});
+const B=(a,c='')=>`<span class="badge ${a} ${c}">${a}</span>`, esc=s=>String(s).replace(/</g,'&lt;');
+const lvl=(k,v)=>v==null?'':`<span><span class="mut">${k}</span> ${f(v)}</span> `;
+function notif(){Notification.requestPermission()}
+function beep(){try{const c=new AudioContext(),o=c.createOscillator();o.connect(c.destination);o.frequency.value=880;o.start();o.stop(c.currentTime+.4)}catch(e){}}
+function showErr(m){$('err').style.display=m?'block':'none';$('err').textContent=m||''}
+async function run(){const b=$('runbtn');b.disabled=true;b.textContent='Analyzing…';const t=$('thr').value;
+ try{const r=await fetch('/api/run?mode=live&threshold='+(t||0),{method:'POST'});if(!r.ok)throw new Error((await r.json()).detail)}catch(e){showErr(e.message)}
+ b.disabled=false;b.textContent='Analyze now';poll()}
+async function bt(){const c=$('btc');c.style.display='block';c.textContent='Running backtest…';
+ try{const d=await (await fetch('/api/backtest')).json();if(!d.n){c.textContent=d.note;return}
+ c.innerHTML=`<b>Backtest of the quant engine</b> <span class="mut">(${d.n} decisions, 15-min horizon, no depth data)</span>
+ <table><tr><th>Signal</th><th>n</th><th>% up after 15m</th><th>mean return (bps)</th></tr>${Object.entries(d.by_action).map(([a,x])=>`<tr><td>${B(a,'sm')}</td><td>${x.n}</td><td>${x.up_pct}</td><td class="${x.mean_ret_bps>0?'pos':'neg'}">${x.mean_ret_bps}</td></tr>`).join('')}</table>
+ <p class="mut">Base rate up: ${d.base_up_pct}% · moves within 1σ: ${d.within_1sd_pct}% (≈68 if vol model is calibrated) · Brier model ${d.brier_model} vs coin-flip ${d.brier_coinflip} (lower is better)</p><p class="mut">${d.note}</p>`}catch(e){c.textContent='Backtest failed: '+e}}
+function render(d){const s=d.signal,q=d.quant,T=d.threshold;
+ const thrQ=T?`<div>Over/under <b>${f(T)}</b>: P(above) <b>${q.p_above!=null?Math.round(q.p_above*100)+'%':'-'}</b> · touch ${q.p_touch!=null?Math.round(q.p_touch*100)+'%':'-'}</div>`:'';
+ const thrC=T?`<div>Over/under <b>${f(T)}</b>: P(above) <b>${s.p_above_threshold??'-'}%</b> · touch ${s.p_touch_threshold??'-'}%</div>`:'';
+ const rows=Object.entries(d.snapshot).map(([k,v])=>`<tr><td>${k}</td><td>${f(v.close)}</td><td>${f(v.pctb)}</td><td>${f(v.k,1)}/${f(v.d,1)}</td><td>${f(v.atr)}</td><td>${f(v.macd_h)}</td>
+ <td class="${q.scores[k]>0.1?'pos':q.scores[k]<-0.1?'neg':'neutral'}">${q.scores[k]??'-'}</td><td class="${s.bias_by_timeframe[k]||'neutral'}">${s.bias_by_timeframe[k]||''}</td></tr>`).join('');
+ $('main').className='';$('main').innerHTML=`<div class="card row"><div>Consensus ${B(d.consensus)}</div><div class="mut">${d.time.replace('T',' ')} · ${d.trigger} · price ${f(d.price)}</div></div>
+ <div class="grid"><div class="card"><b>Quant engine</b> <span class="mut">(rules)</span><div style="margin:8px 0">${B(q.action)} <b>strength ${q.strength}</b></div>${thrQ}
+  <div class="mut">P(up 15m) ${q.p_up!=null?Math.round(q.p_up*100)+'%':'-'} · 1σ range ${q.range_1sd?f(q.range_1sd[0])+' – '+f(q.range_1sd[1]):'-'}</div>
+  <div>${lvl('entry',q.entry)}${lvl('stop',q.stop)}${lvl('T1',q.target_1)}${lvl('T2',q.target_2)}</div>
+  <ul>${(q.reasons||[]).map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div>
+ <div class="card"><b>Claude</b> <span class="mut">(LLM)</span><div style="margin:8px 0">${B(s.action)} <b>${s.confidence}%</b></div>${thrC}<p>${esc(s.summary)}</p>
+  <div>${lvl('entry',s.entry_low)}${lvl('to',s.entry_high)}${lvl('stop',s.stop_loss)}${lvl('T1',s.target_1)}${lvl('T2',s.target_2)}</div>
+  <p><span class="mut">Invalidation:</span> ${esc(s.invalidation||'-')}</p>
+  <ul>${s.reasons.map(x=>`<li>${esc(x)}</li>`).join('')}</ul><ul class="mut">${s.risks.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div></div>
+ <div class="card" style="margin-top:14px"><table><tr><th>TF (last closed)</th><th>Close</th><th>%B</th><th>StochK/D</th><th>ATR</th><th>MACD h</th><th>Quant score</th><th>Claude bias</th></tr>${rows}</table>
+ <details><summary class="mut">Text report sent to Claude</summary><pre>${esc(d.report)}</pre></details></div>`}
+async function poll(){
+ try{const st=await (await fetch('/api/status')).json();$('sym').textContent=st.symbol;
+  if(st.threshold&&!$('thr').value)$('thr').value=st.threshold;
+  $('meta').textContent=`${st.model} · next run ${st.next?st.next.at.slice(11,19)+(st.next.lead?` (T-${st.next.lead}m)`:' (candle close)'):'…'}`;showErr(st.error);
+  if(st.latest_id&&st.latest_id!==lastId){const d=await (await fetch('/api/latest')).json();render(d);
+   if(lastId!==null&&d.consensus==='BUY'){beep();if(Notification.permission==='granted')new Notification(`BUY ${st.symbol}`,{body:'Claude and the quant engine agree'})}
+   lastId=st.latest_id;const h=await (await fetch('/api/history')).json();
+   $('hist').innerHTML='<tr><th>Time</th><th>Trigger</th><th>Price</th><th>Quant</th><th>Claude</th><th>Consensus</th></tr>'+h.map(x=>`<tr><td>${x.time.slice(5,16).replace('T',' ')}</td><td>${x.trigger}</td><td>${f(x.price)}</td><td>${B(x.quant.action,'sm')} ${x.quant.strength}</td><td>${B(x.signal.action,'sm')} ${x.signal.confidence}%</td><td>${B(x.consensus,'sm')}</td></tr>`).join('')}
+ }catch(e){}}
+poll();setInterval(poll,5000);
+let lastEv=null;const NM={MR:'Mid-mkt Rev',MOM:'Mid-mkt Mom',END:'End-mkt'},mmss=s=>Math.floor(s/60)+':'+String(s%60).padStart(2,'0');
+async function cfg(){await fetch('/api/engine/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({fee:+$('c_fee').value,stop_pct:+$('c_stop').value,end_tp:+$('c_tp').value,min_conf:+$('c_conf').value,mid_on:$('c_mid').checked,claude:$('c_cl').checked})});engPoll()}
+async function rst(){if(confirm('Clear paper trades, gates and log?')){await fetch('/api/engine/reset',{method:'POST'});lastEv=null;engPoll()}}
+const cell=s=>s.n?`${s.w}/${s.n} ${Math.round(s.w/s.n*100)}% ${f(s.avg,1)}¢`:'–';
+function engRender(e){
+ if(!e.ready){$('eng').textContent=e.err||'Starting contract engine…';return}
+ const b=e.book,x=e.feat,col=a=>/UP/.test(a)?'pos':/DOWN/.test(a)?'neg':'';
+ const recs=Object.entries(e.recs).map(([k,r])=>`<div class="card" style="margin:0;background:#1d2026;${r.gate==='open'&&/BUY/.test(r.action)?'outline:2px solid var(--g)':''}">
+  <div class="mut">${NM[k]}${r.gate==='held'?' · <span class="neg">GATE HELD</span>':''}</div><div class="${col(r.action)}" style="font-size:20px;font-weight:700">${r.action}</div>
+  <div>${r.conf?r.conf+'%':'–'}${r.ask?' · ask '+f(r.ask,1)+'¢':''}</div><div class="mut" style="font-size:12px">${esc(r.note||'')}</div></div>`).join('');
+ const st=Object.entries(e.stats).map(([k,s])=>`<tr><td>${NM[k]}</td><td>${cell(s.ALL)}</td><td>${cell(s['24H'])}</td><td>${cell(s['2H'])}</td>
+  <td class="${s.ALL.pnl>0?'pos':s.ALL.pnl<0?'neg':''}">$${f(s.ALL.pnl)}</td><td class="${e.gates[k]==='open'?'pos':'neg'}">${e.gates[k]}</td></tr>`).join('');
+ const lg=e.log.slice(0,12).map(v=>`<tr><td>${new Date(v.ts*1000).toLocaleTimeString()}</td><td>${NM[v.strategy]}</td><td>${v.kind}</td><td style="text-align:left">${esc(v.text)}${v.alert?'':' <span class="mut">(muted)</span>'}</td></tr>`).join('');
+ $('eng').className='card';$('eng').innerHTML=`<div class="row"><div><b style="font-size:20px">${mmss(e.secs_left)}</b> <span class="mut">left in window</span></div>
+  <div class="mut">${e.age>15?'<span class="neg">feed stale · </span>':''}${e.err?'<span class="neg">'+esc(e.err)+' · </span>':''}Claude ${e.claude?'on':'off'}</div></div>
+  <div class="row" style="justify-content:flex-start;gap:28px;margin:8px 0"><div><span class="mut">SPOT</span> <b>${f(e.spot)}</b></div><div><span class="mut">STRIKE</span> <b>${f(e.strike)}</b></div>
+  <div class="${e.dist>=0?'pos':'neg'}">${f(Math.abs(e.dist))} ${e.dist>=0?'above':'below'}</div>
+  <div><span class="mut">UP</span> ${f(b.up_bid,1)} / ${f(b.up_ask,1)} &nbsp;<span class="mut">DOWN</span> ${f(b.down_bid,1)} / ${f(b.down_ask,1)}</div></div>
+  <div class="mut">Stoch ${x.k} · BB ${x.bb} · ATR ${x.atr} (${x.asleep?'asleep':'awake'}) · Lean ${x.lean} · Story <b style="color:var(--fg)">${x.story}</b></div>
+  <div class="grid" style="grid-template-columns:repeat(3,1fr);margin:10px 0">${recs}</div>
+  <table class="stat"><tr><th>Paper (net of fees)</th><th>ALL</th><th>24H</th><th>2H</th><th>P&amp;L</th><th>Gate</th></tr>${st}</table>
+  <table class="stat" style="margin-top:8px"><tr><th>Time</th><th>Strategy</th><th>Event</th><th style="text-align:left">Detail</th></tr>${lg}</table>`;
+ const mx=e.log.length?e.log[0].id:0;
+ if(lastEv!==null)for(const v of e.log){if(v.id>lastEv&&v.alert){beep();if(Notification.permission==='granted')new Notification(`${NM[v.strategy]}: ${v.kind}`,{body:v.text})}}
+ lastEv=mx}
+async function engPoll(){try{engRender(await (await fetch('/api/engine')).json())}catch(e){}}
+engPoll();setInterval(engPoll,2000);
+
+</script></body></html>
