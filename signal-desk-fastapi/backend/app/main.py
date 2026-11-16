@@ -8,7 +8,8 @@ REST                                                    WebSocket
   GET  /api/aggregate?exchanges=binance,kraken&symbol=BTC   consolidated candles + Bollinger/StochRSI/ATR/signals across exchanges
   GET  /api/tickers?exchange=&symbols=BTC,ETH           (fresh 1-minute ticker snapshots)
   GET  /api/db/{candles|indicators|ticker_snapshots|signals|paper_trades|ml_models}
-  GET  /api/ml/status    POST /api/ml/train
+  GET  /api/ml/status    POST /api/ml/train                      (h2o AutoML, as before)
+  GET  /api/ml/approaches  POST /api/ml/compare  GET /api/ml/compare  POST /api/ml/approaches/train  GET /api/ml/predict   (multi-approach)
 """
 from __future__ import annotations
 
@@ -21,6 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from . import aggregate, config, db, indicators, ml
+from .approaches import models as approach_models, service as approaches
 from .engine import live_price
 from .hub import BASE_RE, ExchangeNotSupported, Hub, now_ms
 
@@ -189,6 +191,80 @@ def _train_quietly(req: TrainRequest):
         ml.train(req.exchange, req.symbols, req.tf, req.horizon, req.max_runtime_secs, req.max_models)
     except Exception as e:  # ml.train already recorded it in ml.STATUS
         print(f"[ml] training failed: {e}")
+
+
+# ---------------------------------------------------------------- multi-approach ML (see app/approaches)
+class CompareRequest(BaseModel):
+    exchange: str
+    symbols: list[str] = Field(min_length=1)
+    tf: str = "1m"
+    approaches: list[str] | None = None            # default: every available one + baselines
+    n_folds: int = Field(4, ge=2, le=8)
+    horizon: int | None = Field(None, ge=1, le=120)
+    cost_bps: float | None = Field(None, ge=0, le=100)   # all-in round-trip friction the label and simulation must clear
+    k: float | None = Field(None, ge=0, le=3)            # label threshold = cost + k * sigma * sqrt(H)
+    thr: float | None = Field(None, gt=0.5, lt=1)        # trade if p >= thr (long) or p <= 1 - thr (short)
+    gate_mult: float | None = Field(None, ge=0, le=10)   # volatility gate: expected move must be >= gate_mult * cost
+
+
+class ApproachTrainRequest(CompareRequest):
+    approach: str = "lightgbm"
+
+
+def _busy():
+    return approaches.COMPARE.get("state") in ("building dataset", "comparing") or approaches.TRAIN.get("state") == "training"
+
+
+@app.get("/api/ml/approaches")
+async def ml_approaches():
+    return clean(dict(catalog=approach_models.catalog(), defaults=approaches.DEFAULTS, saved=approaches.saved_models(),
+                      train=approaches.TRAIN, compare_state=approaches.COMPARE.get("state")))
+
+
+@app.post("/api/ml/compare", status_code=202)
+def ml_compare(req: CompareRequest, background: BackgroundTasks):
+    unknown = [a for a in (req.approaches or []) if a not in approach_models.REGISTRY]
+    if unknown:
+        raise HTTPException(422, f"unknown approach(es) {unknown}; choose from {sorted(approach_models.REGISTRY)}")
+    if _busy():
+        raise HTTPException(409, "another approaches job is running")
+    kw = req.model_dump(exclude={"exchange", "symbols", "tf", "approaches", "n_folds"})
+    background.add_task(_quietly, approaches.run_compare, req.exchange, req.symbols, req.tf, req.approaches, req.n_folds, **kw)
+    return dict(started=True, poll="/api/ml/compare")
+
+
+@app.get("/api/ml/compare")
+async def ml_compare_result():
+    return clean(approaches.COMPARE)
+
+
+@app.post("/api/ml/approaches/train", status_code=202)
+def ml_approach_train(req: ApproachTrainRequest, background: BackgroundTasks):
+    cls = approach_models.REGISTRY.get(req.approach)
+    if cls is None or not cls.fitted:
+        raise HTTPException(422, f"{req.approach!r} is not a trainable approach")
+    if not cls.available():
+        raise HTTPException(501, f"{req.approach} needs `pip install {cls.needs}`")
+    if _busy():
+        raise HTTPException(409, "another approaches job is running")
+    kw = req.model_dump(exclude={"exchange", "symbols", "tf", "approaches", "n_folds", "approach"})
+    background.add_task(_quietly, approaches.train_final, req.approach, req.exchange, req.symbols, req.tf, **kw)
+    return dict(started=True, poll="/api/ml/approaches")
+
+
+@app.get("/api/ml/predict")
+async def ml_predict(exchange: str, symbol: str, tf: str = "1m", approach: str | None = None):
+    try:
+        return clean(await asyncio.to_thread(approaches.predict, exchange, symbol, tf, approach))
+    except LookupError as e:
+        raise HTTPException(404, str(e))
+
+
+def _quietly(fn, *a, **kw):
+    try:
+        fn(*a, **kw)
+    except Exception as e:  # the job already recorded the error in its STATUS dict
+        print(f"[approaches] {fn.__name__} failed: {e}")
 
 
 # ---------------------------------------------------------------- WebSocket

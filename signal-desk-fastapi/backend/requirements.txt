@@ -11,3 +11,9 @@ h2o>=3.44          # optional (needs a Java 11+ runtime) – only for /api/ml/tr
 protobuf==5.29.5
 google
 googleapis-common-protos
+
+# --- optional model approaches (each is skipped, not fatal, if missing; see README "Model approaches") ---
+# lightgbm>=4.3     # recommended primary model
+# catboost>=1.2     # alternative / ensemble member
+# xgboost>=2.0      # benchmark
+# arch>=7.0         # GARCH volatility forecaster
