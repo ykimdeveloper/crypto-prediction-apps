@@ -1,0 +1,1 @@
+crypo trading prediciton apps
