@@ -12,6 +12,7 @@ import PaperPanel from './components/PaperPanel';
 import SignalLog from './components/SignalLog';
 import Footer from './components/Footer';
 import AlertsPanel from './components/AlertsPanel';
+import PolicyControl from './components/PolicyControl';
 import { loadAlerts, saveAlerts, shouldAlert, shouldAlertExit, fireAlert, fireExitAlert } from './lib/alerts';
 import { loadSettings, saveSettings } from './lib/settings';
 import './App.css';
@@ -70,7 +71,7 @@ export default function App() {
     <div className="wrap">
       <Header
         exchanges={EXCHANGES} exchange={exchange} setExchangeId={setExchangeId} mode={mode} setMode={setMode} modes={MODES}
-        ml={ml} setMl={setMl}
+        ml={ml} setMl={setMl} policyControl={<PolicyControl enabled={ml} />}
         exchangePicker={ml ? <ExchangePicker selected={ccxtExchanges} setSelected={setCcxtExchanges} /> : null}
         feed={feed} feedNote={feedNote} activeTf={activeTf} setActiveTf={setActiveTf}
         tfNote={tfNote} timeframes={TIMEFRAMES}

@@ -22,10 +22,28 @@ export const CONTRACT_MS = 15 * MIN_MS;
 
 // ---- Strategy time windows, in minutes REMAINING on the contract (from the transcript / reference screenshot).
 export const TIMING = {
-  midEntryMinRemaining: 5, // MMR + MMC: reference shows "Under five minutes" once < 5:00 is left
+  midEntryMinRemaining: 6, // video: "at least about six minutes left on the 15-minute clock" (was 5)
   midManageUntil: 1,       // header: "mid-market (to 1:00)" -> take-profit is only watched until 1:00 remains
   eomMaxRemaining: 8,      // header: "end-of-market (8:00 -> 2:00)"
   eomMinRemaining: 2,
+};
+
+// ---- Mid-market entry rules from the v0.2 video walkthrough.
+// The video gives the *shape* of these rules but no numbers, so sideMinZ / sideMaxZ / minHitProb are tunable starting points.
+export const MID = {
+  // "Right now, mid-market only takes the momentum continuation story." Reversion is still classified and shown as a lean
+  // label; it just never produces a mid-market buy. Flip to true to bring MID REV back for experiments.
+  revEnabled: false,
+  // "Price should already be a little on that side of the strike ... the move has started but is not exhausted."
+  // Measured in sigmas of the remaining path (ATR * sqrt(candles left)), the same yardstick the modeled book uses:
+  // below sideMinZ the move hasn't started, above sideMaxZ it has already run.
+  sideMinZ: 0.15,
+  sideMaxZ: 0.9,
+  // "The chance of hitting the +20¢ goal has to clear a high bar." Probability that the contract's fair value reaches
+  // (ask + take-profit + half-spread) before settling. hitSigmaFudge is the vol scale of *our* probability estimate;
+  // it equals BOOK.sigmaFudge so the modeled book and our view agree. Set it lower to trust realized ATR more than the book.
+  minHitProb: 0.72,
+  hitSigmaFudge: 1.4,
 };
 
 // ---- Contract price rules, in cents on a 0-100 scale (Kalshi-style Up/Down contracts)
@@ -45,6 +63,9 @@ export const PRICE = {
 export const BOOK = { sigmaFudge: 1.4, halfSpread: 0.5 };
 // End-of-market confidence uses an even more conservative tail so it sits a few points under the book price (as in the screenshot).
 export const EOM_CONF_SIGMA = 2.0;
+// End-of-market: StochRSI/Bollinger are "only a light early nudge" that fades as time runs out. This is the nudge's weight
+// in the confidence blend at eomMaxRemaining; it shrinks linearly to 0 at eomMinRemaining (was a fixed 0.2 at any time).
+export const EOM_INDICATOR_WEIGHT = 0.2;
 
 export const BB_PERIOD = 20;
 export const STOCH_PERIOD = 14;

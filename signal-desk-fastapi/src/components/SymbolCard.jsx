@@ -44,6 +44,12 @@ export default function SymbolCard({ card, onRemove, showMid = true }) {
         <span>Lean <b>{card.lean}</b></span>
         <span>Story <b>{card.story}</b></span>
         <span>ATR state <b>{card.atrState}</b></span>
+        {card.policy && (
+          <span title={card.policy.note || `15-minute model P(up) for this window; a BUY needs it to back the direction by ${card.policy.margin}`}>
+            Model ↑ <b>{card.policy.pUp != null ? `${Math.round(card.policy.pUp * 100)}%` : '…'}</b>
+            {card.policy.vetoed.length > 0 && <> · vetoed <b>{card.policy.vetoed.join(', ')}</b></>}
+          </span>
+        )}
         {card.ml != null && <span title="h2o model: probability the close 15 candles from now is above the current close. Information only — it never gates a strategy.">ML ↑ <b>{card.ml}</b></span>}
       </div>
       <div className="strat-row">

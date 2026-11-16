@@ -9,6 +9,7 @@ updates.
 ```
 npm install
 npm run dev
+npx vitest
 ```
 
 Then open the printed local URL. **This must run locally** (or anywhere your own browser can

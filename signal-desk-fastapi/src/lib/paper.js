@@ -170,7 +170,8 @@ export function settle(paper, engines, now) {
     const price = eng ? livePrice(eng) : null;
     if (price == null) return;
     paper.open.delete(key);
-    const win = rec.dir === 'UP' ? price > rec.strike : price < rec.strike;
+    const up = price >= rec.strike; // tie settles UP (same rule as backend/app/settlement.py)
+    const win = rec.dir === 'UP' ? up : !up;
     const settlePnl = win ? 100 - rec.entry : -rec.entry;
     if (rec.exited) {
       rec.record.path = rec.path;

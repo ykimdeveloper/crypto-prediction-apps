@@ -369,3 +369,5 @@ input {
 .venue.live { border-color: var(--up); }
 .venue.stale { border-color: var(--wait); }
 .venue.error { border-color: var(--down); opacity: 0.75; }
+
+.policy-note { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--wait); max-width: 320px; line-height: 1.3; }

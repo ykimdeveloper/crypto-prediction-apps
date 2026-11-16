@@ -2,10 +2,12 @@
 MIN_MS = 60_000
 CONTRACT_MS = 15 * MIN_MS
 
-TIMING = dict(midEntryMinRemaining=5, midManageUntil=1, eomMaxRemaining=8, eomMinRemaining=2)
+TIMING = dict(midEntryMinRemaining=6, midManageUntil=1, eomMaxRemaining=8, eomMinRemaining=2)
+MID = dict(revEnabled=False, sideMinZ=0.15, sideMaxZ=0.9, minHitProb=0.72, hitSigmaFudge=1.4)  # see MID in src/lib/constants.js
 PRICE = dict(minEntry=35, mmrBand=(35, 50), mmcBand=(50, 78), eomBand=(85, 98), tpMmr=15, tpMmc=20)
 BOOK = dict(sigmaFudge=1.4, halfSpread=0.5)
 EOM_CONF_SIGMA = 2.0
+EOM_INDICATOR_WEIGHT = 0.2
 
 BB_PERIOD = 20
 STOCH_PERIOD = 14

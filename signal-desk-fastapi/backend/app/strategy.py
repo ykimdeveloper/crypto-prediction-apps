@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 import time
 
-from .constants import BOOK, CONTRACT_MS, EOM_CONF_SIGMA, MIN_MS, PRICE, TIMING
+from .constants import BOOK, CONTRACT_MS, EOM_CONF_SIGMA, EOM_INDICATOR_WEIGHT, MID, MIN_MS, PRICE, TIMING
 from . import config
 
 
@@ -24,6 +24,15 @@ def clamp(v, lo, hi):
 
 def round1(v):
     return js_round(v * 10) / 10
+
+
+def round3(v):
+    return js_round(v * 1000) / 1000
+
+
+def f2(v):
+    """Mirror of the JS f2: pre-round so toFixed(2) and Python's formatter can't disagree on exact .xx5 ties."""
+    return f"{js_round(v * 100) / 100:.2f}"
 
 
 def fmt(price):
@@ -145,23 +154,38 @@ def compute_module_signals(eng, tf_ms, now_ms=None):
     sleep_ok = eng.ind["atr"]["state"] != "Quiet/Asleep"
     d = "UP" if lean > 0 else "DOWN" if lean < 0 else None
     side_ask = lambda x: book["up"]["ask"] if x == "UP" else book["down"]["ask"]  # noqa: E731
+    # one "sigma" of the path still to come, on the same scale the modeled book uses
+    candles_left = max(remaining_ms / tf_ms, 0.02)
+    path_scale = (eng.ind["atr"]["atr"] * math.sqrt(candles_left)) or 1e-12
 
     def mid_fork(kind):
+        if kind == "rev" and not MID["revEnabled"]:
+            return WAIT("Mean reversion is off in v0.2 — mid-market only takes the momentum story.")
         want = "Mean Reversion" if kind == "rev" else "Momentum Continuation"
         if story != want:
             return WAIT(f"Not {'rev' if kind == 'rev' else 'mom'} — story is {_short(story)}.")
         if rem_min < TIMING["midEntryMinRemaining"]:
-            return WAIT("Under five minutes.")
+            return WAIT(f"Under {TIMING['midEntryMinRemaining']}:00 left.")
         if not sleep_ok:
             return WAIT("ATR asleep — sleep filter blocks the mid-market forks.")
         if not d:
             return WAIT("No lean.")
         k, traj, state = eng.ind["stoch"]["k"], eng.ind["stoch"]["traj"], eng.ind["stoch"]["state"]
+        conf = clamp_conf(50 + abs(lean) * 38 + 8)
+
+        # momentum only: price must already be a little on the lean's side of the strike, but not run out
+        side_z = None
+        if kind == "mom":
+            side_z = ((price - strike) * (1 if d == "UP" else -1)) / path_scale
+            if side_z < MID["sideMinZ"]:
+                return WAIT(f"Price isn't on the {d} side of the strike yet ({f2(side_z)}σ, need {f2(MID['sideMinZ'])}σ).", conf)
+            if side_z > MID["sideMaxZ"]:
+                return WAIT(f"Move already ran: {f2(side_z)}σ past the strike (max {f2(MID['sideMaxZ'])}σ).", conf)
+
         if kind == "rev":
             stoch_ok = (state == "Bounce_Bottom" or (k <= 40 and traj == "Rising")) if d == "UP" else (state == "Rollover_Top" or (k >= 60 and traj == "Falling"))
         else:
             stoch_ok = (50 <= k <= 85 and traj == "Rising") if d == "UP" else (15 <= k <= 50 and traj == "Falling")
-        conf = clamp_conf(50 + abs(lean) * 38 + 8)
         if not stoch_ok:
             return WAIT("Stoch not confirmed.", conf)
         ask = side_ask(d)
@@ -173,8 +197,18 @@ def compute_module_signals(eng, tf_ms, now_ms=None):
         if ask > hi:
             return WAIT(f"{d} is {num(ask)}¢ — above the {lo}–{hi}¢ entry band.", conf)
         tp = PRICE["tpMmr"] if kind == "rev" else PRICE["tpMmc"]
-        reason = f"Snapback: {d} at {num(ask)}¢, target +{tp}¢, no stop." if kind == "rev" else f"Breakout running: {d} at {num(ask)}¢, target +{tp}¢, no stop."
-        return dict(signal=f"BUY {d}", conf=conf, ask=ask, tp=tp, reason=reason)
+
+        # chance of hitting the take-profit: fair value is a martingale ending at 0/100, so P(reach L from p) = p / L, with
+        # p = our probability this side finishes in the money and L = ask + tp + half-spread (where the bid sits tp above the ask)
+        p_hit = None
+        if kind == "mom":
+            side_prob = normal_cdf(side_z / MID["hitSigmaFudge"]) * 100
+            p_hit = round3(min(1, side_prob / (ask + tp + BOOK["halfSpread"])))
+            if p_hit < MID["minHitProb"]:
+                return WAIT(f"+{tp}¢ only ~{js_round(p_hit * 100)}% likely from {num(ask)}¢ (need {js_round(MID['minHitProb'] * 100)}%).", conf)
+        reason = (f"Snapback: {d} at {num(ask)}¢, target +{tp}¢, no stop." if kind == "rev"
+                  else f"Breakout running: {d} at {num(ask)}¢, target +{tp}¢ (~{js_round(p_hit * 100)}% to hit), no stop.")
+        return dict(signal=f"BUY {d}", conf=conf, ask=ask, tp=tp, pHit=p_hit, reason=reason)
 
     rev, mom = mid_fork("rev"), mid_fork("mom")
 
@@ -184,12 +218,14 @@ def compute_module_signals(eng, tf_ms, now_ms=None):
         price_up = price >= strike
         e_dir = "UP" if price_up else "DOWN"
         ask = side_ask(e_dir)
-        candles_left = max(remaining_ms / tf_ms, 0.02)
         cushion = abs(price - strike)
-        buffer = eng.ind["atr"]["atr"] * math.sqrt(candles_left)
+        buffer = path_scale
+        # indicators are only a light early nudge: full weight at 8:00, fading linearly to 0 at 2:00
+        fade = clamp((rem_min - TIMING["eomMinRemaining"]) / (TIMING["eomMaxRemaining"] - TIMING["eomMinRemaining"]), 0, 1)
+        ind_w = EOM_INDICATOR_WEIGHT * fade
         stat_conf = normal_cdf(cushion / ((buffer * EOM_CONF_SIGMA) or 1e-12)) * 100
         agree = lean if e_dir == "UP" else -lean
-        conf = clamp(js_round(0.8 * stat_conf + 0.2 * (50 + 50 * agree)), 1, 99)
+        conf = clamp(js_round((1 - ind_w) * stat_conf + ind_w * (50 + 50 * agree)), 1, 99)
         lo, hi = PRICE["eomBand"]
         if rem_min > TIMING["eomMaxRemaining"]:
             end = WAIT(f"Leaning {e_dir} ({num(ask)}¢) — buys open at {TIMING['eomMaxRemaining']}:00 remaining.", conf)

@@ -9,6 +9,7 @@ REST                                                    WebSocket
   GET  /api/tickers?exchange=&symbols=BTC,ETH           (fresh 1-minute ticker snapshots)
   GET  /api/db/{candles|indicators|ticker_snapshots|signals|paper_trades|ml_models}
   GET  /api/ml/status    POST /api/ml/train                      (h2o AutoML, as before)
+  POST /api/quant15/{backfill|compare|train}  GET /api/quant15/{status|decide}   (15m model + original algorithm, see app/quant15)
   GET  /api/ml/approaches  POST /api/ml/compare  GET /api/ml/compare  POST /api/ml/approaches/train  GET /api/ml/predict   (multi-approach)
 """
 from __future__ import annotations
@@ -25,6 +26,9 @@ from . import aggregate, config, db, indicators, ml
 from .approaches import models as approach_models, service as approaches
 from .engine import live_price
 from .hub import BASE_RE, ExchangeNotSupported, Hub, now_ms
+from .levels import forward_log as levels_journal
+from .levels.routes import router as levels_router
+from .quant15.routes import router as quant15_router
 
 hub = Hub()
 
@@ -33,13 +37,17 @@ hub = Hub()
 async def lifespan(_: FastAPI):
     db.init()
     await hub.start()
+    journal_task = levels_journal.start()   # idles unless Levels is On; own task, own connection
     yield
+    journal_task.cancel()
     await hub.stop()
     db.close()
 
 
 app = FastAPI(title="Signal Desk backend", version="1.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=config.CORS_ORIGINS, allow_methods=["*"], allow_headers=["*"])
+app.include_router(quant15_router)
+app.include_router(levels_router)
 
 
 # ---------------------------------------------------------------- helpers

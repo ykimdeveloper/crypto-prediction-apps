@@ -10,6 +10,7 @@ from typing import Awaitable, Callable
 from . import aggregate, config, db, indicators, ml
 from .constants import MIN_MS, STRAT_LABEL
 from .engine import Engine, live_price
+from .quant15 import live as q15_live
 from .paper import Paper, apply as paper_apply, settle as paper_settle, summarize
 
 now_ms = lambda: int(time.time() * 1000)  # noqa: E731
@@ -82,6 +83,7 @@ class SymbolState:
         self.always_on = False
         self.snap_minute = 0
         self.ml_p_up: float | None = None
+        self.policy: dict | None = None     # quant15 live policy result for the card (mode, model P(up), vetoed strategies)
         self.ml_busy = False
 
 
@@ -358,6 +360,10 @@ class Hub:
         if eng.current is None:
             return
         sig = eng.evaluate(now)
+        try:
+            st.policy = q15_live.apply(st.exchange, st.symbol, sig, now)   # original: no-op; gated: vetoes BUYs the 15m model disagrees with
+        except Exception as e:  # noqa: BLE001  the desk must keep running on the original signals
+            st.policy = dict(mode="original", active=False, note=f"policy error: {type(e).__name__}: {e}", vetoed=[])
         paper = self.paper(st.exchange)
         exits: list = []
         opened = paper_apply(paper, st.base, TF, MIN_MS, eng, sig, now, exits)
@@ -496,7 +502,7 @@ class Hub:
         eng = st.eng
         tk = st.ticker if st.ticker and st.ticker.get("bid") is not None and st.ticker.get("ask") is not None else None
         return dict(symbol=base, failed=bool(st.error), error=st.error, price=live_price(eng), strike=eng.contract_strike,
-                    contractStart=eng.contract_start, ind=eng.ind, sig=eng.signals, mlPUp=st.ml_p_up,
+                    contractStart=eng.contract_start, ind=eng.ind, sig=eng.signals, mlPUp=st.ml_p_up, policy=st.policy,
                     spotBook=dict(bid=tk["bid"], ask=tk["ask"]) if tk else None, lastTickAt=eng.last_tick_at,
                     venues=st.report if isinstance(st, AggState) else None)
 

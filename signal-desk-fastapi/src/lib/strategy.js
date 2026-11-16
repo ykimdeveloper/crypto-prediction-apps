@@ -1,9 +1,12 @@
-import { CONTRACT_MS, MIN_MS, TIMING, PRICE, BOOK, EOM_CONF_SIGMA, STALE_MS } from './constants';
+import { CONTRACT_MS, MIN_MS, TIMING, MID, PRICE, BOOK, EOM_CONF_SIGMA, EOM_INDICATOR_WEIGHT, STALE_MS } from './constants';
 import { fmt, clampConf } from './format';
 import { livePrice } from './engine';
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const round1 = (v) => Math.round(v * 10) / 10;
+const round3 = (v) => Math.round(v * 1000) / 1000;
+// pre-round so toFixed can't disagree with Python's formatter on exact .xx5 ties (the server port must print the same text)
+const f2 = (v) => (Math.round(v * 100) / 100).toFixed(2);
 
 function erf(x) {
   const sign = x < 0 ? -1 : 1;
@@ -91,9 +94,12 @@ const short = (story) => (story === 'Mean Reversion' ? 'revert' : story === 'Mom
 const WAIT = (reason, conf = null) => ({ signal: 'WAIT', conf, reason });
 
 // ---------- the three strategies ----------
-// Unlike the old version there is NO mutually-exclusive "module A / module B" switch: each strategy has its own clock.
-//   MID REV / MID MOM: entries only while >= 5:00 remains (the reference shows "Under five minutes"), take-profit watched to 1:00.
-//   END-MKT:           only between 8:00 and 2:00 remaining, so it overlaps the mid-market forks from 8:00 to 5:00.
+// Each strategy has its own clock (no mutually-exclusive "module A / module B" switch):
+//   MID REV / MID MOM: entries only while >= TIMING.midEntryMinRemaining (6:00) remains, take-profit watched to 1:00.
+//   END-MKT:           only between 8:00 and 2:00 remaining, so it overlaps the mid-market forks from 8:00 to 6:00.
+// v0.2 mid-market (video order): ATR awake -> momentum story -> side follows the lean -> price already a little on that
+// side of the strike -> StochRSI confirms -> not a lottery ticket AND a high chance of the +20¢ -> enough time left.
+// MID REV is switched off (MID.revEnabled) so only momentum buys are allowed; the lean/story labels are still computed.
 export function computeModuleSignals(eng, tfMs) {
   const price = livePrice(eng);
   const warming = !eng.ind.bb || !eng.ind.stoch || !eng.ind.atr || eng.contractStart == null || price == null;
@@ -111,14 +117,29 @@ export function computeModuleSignals(eng, tfMs) {
   const sleepOk = eng.ind.atr.state !== 'Quiet/Asleep';
   const dir = lean > 0 ? 'UP' : lean < 0 ? 'DOWN' : null;
   const sideAsk = (d) => (d === 'UP' ? book.up.ask : book.down.ask);
+  // one "sigma" of the path still to come, on the same scale the modeled book uses
+  const candlesLeft = Math.max(remainingMs / tfMs, 0.02);
+  const pathScale = (eng.ind.atr.atr * Math.sqrt(candlesLeft)) || 1e-12;
 
   const midFork = (kind) => {
+    if (kind === 'rev' && !MID.revEnabled) return WAIT('Mean reversion is off in v0.2 — mid-market only takes the momentum story.');
     const want = kind === 'rev' ? 'Mean Reversion' : 'Momentum Continuation';
     if (story !== want) return WAIT(`Not ${kind === 'rev' ? 'rev' : 'mom'} — story is ${short(story)}.`);
-    if (remMin < TIMING.midEntryMinRemaining) return WAIT('Under five minutes.');
+    if (remMin < TIMING.midEntryMinRemaining) return WAIT(`Under ${TIMING.midEntryMinRemaining}:00 left.`);
     if (!sleepOk) return WAIT('ATR asleep — sleep filter blocks the mid-market forks.');
     if (!dir) return WAIT('No lean.');
     const { k, traj, state } = eng.ind.stoch;
+    const conf = clampConf(50 + Math.abs(lean) * 38 + 8);
+
+    // momentum only: price must already be a little on the lean's side of the strike, but not run out.
+    // (Not applied to reversion, which by design buys the side price is *away* from.)
+    let sideZ = null;
+    if (kind === 'mom') {
+      sideZ = ((price - strike) * (dir === 'UP' ? 1 : -1)) / pathScale;
+      if (sideZ < MID.sideMinZ) return WAIT(`Price isn't on the ${dir} side of the strike yet (${f2(sideZ)}σ, need ${f2(MID.sideMinZ)}σ).`, conf);
+      if (sideZ > MID.sideMaxZ) return WAIT(`Move already ran: ${f2(sideZ)}σ past the strike (max ${f2(MID.sideMaxZ)}σ).`, conf);
+    }
+
     let stochOk;
     if (kind === 'rev') {
       stochOk = dir === 'UP' ? state === 'Bounce_Bottom' || (k <= 40 && traj === 'Rising')
@@ -126,7 +147,6 @@ export function computeModuleSignals(eng, tfMs) {
     } else {
       stochOk = dir === 'UP' ? k >= 50 && k <= 85 && traj === 'Rising' : k <= 50 && k >= 15 && traj === 'Falling';
     }
-    const conf = clampConf(50 + Math.abs(lean) * 38 + 8);
     if (!stochOk) return WAIT('Stoch not confirmed.', conf);
     const ask = sideAsk(dir);
     const [lo, hi] = kind === 'rev' ? PRICE.mmrBand : PRICE.mmcBand;
@@ -134,11 +154,21 @@ export function computeModuleSignals(eng, tfMs) {
     if (ask < lo) return WAIT(`${dir} is ${ask}¢ — below the ${lo}–${hi}¢ entry band.`, conf);
     if (ask > hi) return WAIT(`${dir} is ${ask}¢ — above the ${lo}–${hi}¢ entry band.`, conf);
     const tp = kind === 'rev' ? PRICE.tpMmr : PRICE.tpMmc;
+
+    // chance of hitting the take-profit. Contract fair value is a martingale that ends at 0 or 100, so the chance it ever
+    // reaches level L from value p is p / L. Here p is our own probability of this side finishing in the money and L is the
+    // fair value at which the bid sits `tp` above the ask we pay (ask + tp + half-spread).
+    let pHit = null;
+    if (kind === 'mom') {
+      const sideProb = normalCdf(sideZ / MID.hitSigmaFudge) * 100;
+      pHit = round3(Math.min(1, sideProb / (ask + tp + BOOK.halfSpread)));
+      if (pHit < MID.minHitProb) return WAIT(`+${tp}¢ only ~${Math.round(pHit * 100)}% likely from ${ask}¢ (need ${Math.round(MID.minHitProb * 100)}%).`, conf);
+    }
     return {
-      signal: `BUY ${dir}`, conf, ask, tp,
+      signal: `BUY ${dir}`, conf, ask, tp, pHit,
       reason: kind === 'rev'
         ? `Snapback: ${dir} at ${ask}¢, target +${tp}¢, no stop.`
-        : `Breakout running: ${dir} at ${ask}¢, target +${tp}¢, no stop.`,
+        : `Breakout running: ${dir} at ${ask}¢, target +${tp}¢ (~${Math.round(pHit * 100)}% to hit), no stop.`,
     };
   };
 
@@ -155,13 +185,15 @@ export function computeModuleSignals(eng, tfMs) {
     const favorUp = price >= strike;
     const eDir = favorUp ? 'UP' : 'DOWN';
     const ask = sideAsk(eDir);
-    const candlesLeft = Math.max(remainingMs / tfMs, 0.02);
     const cushion = Math.abs(price - strike);
-    const buffer = eng.ind.atr.atr * Math.sqrt(candlesLeft);
-    // indicators are only "light seasoning" here (<= 20% of the confidence)
+    const buffer = pathScale;
+    // Indicators are only a light early nudge: full weight (EOM_INDICATOR_WEIGHT) at 8:00, fading linearly to 0 at 2:00,
+    // so late in the window the confidence is pure cushion-vs-noise.
+    const fade = clamp((remMin - TIMING.eomMinRemaining) / (TIMING.eomMaxRemaining - TIMING.eomMinRemaining), 0, 1);
+    const indW = EOM_INDICATOR_WEIGHT * fade;
     const statConf = normalCdf(cushion / (buffer * EOM_CONF_SIGMA || 1e-12)) * 100;
     const agree = eDir === 'UP' ? lean : -lean;
-    const conf = clamp(Math.round(0.8 * statConf + 0.2 * (50 + 50 * agree)), 1, 99);
+    const conf = clamp(Math.round((1 - indW) * statConf + indW * (50 + 50 * agree)), 1, 99);
     if (remMin > TIMING.eomMaxRemaining) {
       end = WAIT(`Leaning ${eDir} (${ask}¢) — buys open at ${TIMING.eomMaxRemaining}:00 remaining.`, conf);
     } else if (ask > PRICE.eomBand[1]) {

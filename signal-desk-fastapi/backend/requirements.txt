@@ -5,7 +5,8 @@ ta>=0.11
 pandas>=2.0
 numpy>=1.26
 joblib>=1.3
-scikit-learn>=1.3  # joblib/pandas peers; not used for modelling
+scikit-learn>=1.3  # joblib/pandas peers; also HistGB fallback for app/quant15
+scipy>=1.10        # app/quant15 (normal CDF); already pulled in by scikit-learn
 h2o>=3.44          # optional (needs a Java 11+ runtime) – only for /api/ml/train
 
 protobuf==5.29.5

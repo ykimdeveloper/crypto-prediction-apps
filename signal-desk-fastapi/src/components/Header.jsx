@@ -1,6 +1,6 @@
 const TF_LABEL = { '1s': '1 second', '5s': '5 second', '10s': '10 second', '30s': '30 second', '1m': '1 minute' };
 
-export default function Header({ exchanges, exchange, setExchangeId, exchangePicker, mode, setMode, modes, ml, setMl, feed, feedNote, activeTf, setActiveTf, tfNote, timeframes }) {
+export default function Header({ exchanges, exchange, setExchangeId, exchangePicker, mode, setMode, modes, ml, setMl, policyControl, feed, feedNote, activeTf, setActiveTf, tfNote, timeframes }) {
   const feedText = feed === 'live' ? 'live' : feed === 'stale' ? 'feed stale — waiting' : 'connecting…';
 
   return (
@@ -30,6 +30,7 @@ export default function Header({ exchanges, exchange, setExchangeId, exchangePic
           </button>
           <span className="ml-label" onClick={() => setMl(!ml)}>ML · FastAPI</span>
         </div>
+        {policyControl}
         {exchangePicker || (
           <select value={exchange.baseId || exchange.id} onChange={(e) => setExchangeId(e.target.value)} aria-label="Exchange">
             {exchanges.map((e) => (

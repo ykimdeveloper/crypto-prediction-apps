@@ -58,6 +58,7 @@ export function serverCard(snap, quote, exName, pair, now = Date.now()) {
     closesIn: snap.contractStart != null ? fmtRemaining(snap.contractStart + CONTRACT_MS - now) : '—',
     rev: sig.rev, mom: sig.mom, end: sig.end,
     ml: snap.mlPUp != null ? `${Math.round(snap.mlPUp * 100)}%` : null,
+    policy: snap.policy && snap.policy.mode === 'gated' ? snap.policy : null,
     venues: snap.venues ? shapeVenues(snap.venues) : null,
   };
 }

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from .constants import CONTRACT_MS, MIN_MS, PAPER, STRAT_KEYS, TIMING
 from .engine import live_price
+from .settlement import position_wins
 
 H = 3_600_000
 
@@ -200,7 +201,7 @@ def settle(paper: Paper, engines: dict, now) -> bool:
         if price is None:
             continue
         del paper.open[key]
-        win = price > rec["strike"] if rec["dir"] == "UP" else price < rec["strike"]
+        win = position_wins(rec["dir"], price, rec["strike"])
         settle_pnl = 100 - rec["entry"] if win else -rec["entry"]
         if rec["exited"]:
             rec["record"]["path"] = rec["path"]
